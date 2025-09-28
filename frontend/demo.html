@@ -1,0 +1,177 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Cerebral Courtroom - Demo</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    #output { white-space: pre-wrap; border: 1px solid #ddd; padding: 12px; min-height: 120px; }
+  </style>
+</head>
+<body>
+  <h2>Cerebral Courtroom — Opposing Counsel Streaming Demo</h2>
+  <label>Facts:</label><br/>
+  <textarea id="facts" rows="4" cols="80">Alice saw Bob at the store.</textarea><br/>
+  <label>Argument:</label><br/>
+  <input id="argument" size="80" value="The defendant was at the scene." /><br/><br/>
+  <button id="start">Start Streaming</button>
+  <h3>Live Output</h3>
+  <div id="output"></div>
+  <div id="status" style="margin-top:8px;color:#666"></div>
+  <h3>WebSocket Orchestrator</h3>
+  <button id="connect">Create Session & Connect</button>
+  <span id="sessionId" style="margin-left:8px;color:#333"></span><br/><br/>
+  <button id="presentBtn" disabled>Present (send argument)</button>
+  <div id="wsArea" style="display:flex;gap:16px;margin-top:8px">
+    <div id="wsOutput" style="flex:1;white-space:pre-wrap;border:1px solid #eee;padding:8px;min-height:120px;
+                max-height:300px;overflow:auto;background:#fafafa;border-radius:6px;
+                box-shadow:0 1px 0 rgba(0,0,0,0.02)"></div>
+    <div id="juryPanel" style="width:260px;min-height:120px;border:1px solid #eee;padding:12px;background:#fff;border-radius:6px">
+      <strong>Jury Verdict</strong>
+      <div id="juryVerdict" style="margin-top:8px;color:#222">(no verdict yet)</div>
+      <div style="margin-top:12px">Confidence</div>
+      <div style="background:#eee;border-radius:8px;overflow:hidden;margin-top:6px">
+        <div id="juryConfidence" style="height:14px;width:0%;background:#3b82f6"></div>
+      </div>
+      <div id="juryConfidenceText" style="margin-top:6px;color:#555">--</div>
+    </div>
+  </div>
+
+  <script>
+    document.getElementById('start').addEventListener('click', function(){
+      const facts = encodeURIComponent(document.getElementById('facts').value);
+      const argument = encodeURIComponent(document.getElementById('argument').value);
+      const url = `/api/demo/opposing-stream?facts=${facts}&argument=${argument}`;
+
+  document.getElementById('output').textContent = '';
+  const startBtn = document.getElementById('start');
+  startBtn.disabled = true;
+  document.getElementById('status').textContent = 'Connecting...';
+  const es = new EventSource(url);
+      es.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data.type === 'delta') {
+            document.getElementById('output').textContent += data.delta;
+          } else if (data.type === 'done') {
+            document.getElementById('output').textContent += '\n\n--DONE--';
+            es.close();
+            startBtn.disabled = false;
+            document.getElementById('status').textContent = 'Complete';
+          } else if (data.type === 'error') {
+            document.getElementById('output').textContent += '\n\nERROR: ' + data.error;
+            es.close();
+            startBtn.disabled = false;
+            document.getElementById('status').textContent = 'Error';
+          }
+        } catch (err) {
+          document.getElementById('output').textContent += '\n\nPARSE ERROR';
+          es.close();
+        }
+      };
+      es.onerror = (err) => {
+        document.getElementById('output').textContent += '\n\nConnection error - falling back to non-streaming call';
+        es.close();
+        startBtn.disabled = false;
+        document.getElementById('status').textContent = 'Falling back...';
+        // fallback: call non-streaming endpoint
+        fetch('/api/demo/opposing', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ facts: decodeURIComponent(facts), argument: decodeURIComponent(argument) })
+        }).then(r => r.json()).then(j => {
+          if (j.reply) {
+            document.getElementById('output').textContent += '\n\n' + j.reply;
+          } else if (j.error) {
+            document.getElementById('output').textContent += '\n\nFALLBACK ERROR: ' + j.error;
+          }
+        }).then(()=>{ document.getElementById('status').textContent = 'Complete (fallback)'; }).catch(e => {
+          document.getElementById('output').textContent += '\n\nFALLBACK FETCH ERROR: ' + e;
+          document.getElementById('status').textContent = 'Fallback error';
+        });
+      };
+    });
+
+    // WebSocket orchestrator UI
+    document.getElementById('connect').addEventListener('click', async function(){
+      const facts = document.getElementById('facts').value;
+      const title = 'Demo Session';
+      const r = await fetch('/api/session', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({title, facts})});
+      const j = await r.json();
+      const sid = j.session_id;
+      document.getElementById('sessionId').textContent = sid;
+      // open websocket
+      const ws = new WebSocket(`ws://${location.host}/ws/session/${sid}`);
+      ws.onopen = () => {
+        document.getElementById('wsOutput').textContent += '\n[ws] connected';
+        document.getElementById('presentBtn').disabled = false;
+      };
+      ws.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          appendWsMessage(data);
+        } catch(err) {
+          document.getElementById('wsOutput').textContent += '\n[ws] parse error';
+        }
+      };
+      ws.onclose = () => document.getElementById('wsOutput').textContent += '\n[ws] closed';
+
+      document.getElementById('presentBtn').addEventListener('click', function(){
+        const arg = document.getElementById('argument').value;
+        // disable button while waiting for replies
+        document.getElementById('presentBtn').disabled = true;
+        ws.send(JSON.stringify({type:'present', text: arg}));
+      });
+    });
+    
+    function appendWsMessage(data) {
+      const out = document.getElementById('wsOutput');
+      const time = new Date().toLocaleTimeString();
+      const agent = data.agent || 'Agent';
+      const text = data.text || '';
+
+      const entry = document.createElement('div');
+      entry.style.padding = '8px';
+      entry.style.borderBottom = '1px solid #f0f0f0';
+      entry.innerHTML = `<div style="font-size:12px;color:#666">${time} • <strong style=\"color:#111\">${agent}</strong></div><div style=\"margin-top:6px;color:#111\">${escapeHtml(text)}</div>`;
+      out.appendChild(entry);
+      out.scrollTop = out.scrollHeight;
+
+      // If the jury included parsed fields, show them in the side panel
+      if (data.agent === 'Jury') {
+        // if server included structured fields, use them
+        if (data.verdict || data.confidence) {
+          const v = data.verdict || 'No Verdict';
+          const c = data.confidence != null ? data.confidence : '--';
+          document.getElementById('juryVerdict').textContent = v;
+          if (typeof c === 'number') {
+            const pct = Math.max(0, Math.min(100, c));
+            document.getElementById('juryConfidence').style.width = pct + '%';
+            document.getElementById('juryConfidenceText').textContent = pct + '%';
+          } else {
+            document.getElementById('juryConfidence').style.width = '0%';
+            document.getElementById('juryConfidenceText').textContent = '--';
+          }
+        } else {
+          // attempt to parse free text like 'Verdict: X; Confidence: NN%'
+          const m = /Verdict:\s*(Guilty|Not Guilty|No Verdict)\s*;\s*Confidence:\s*(\d{1,3})%/i.exec(text);
+          if (m) {
+            const v = m[1];
+            const c = parseInt(m[2], 10);
+            document.getElementById('juryVerdict').textContent = v;
+            document.getElementById('juryConfidence').style.width = Math.max(0, Math.min(100, c)) + '%';
+            document.getElementById('juryConfidenceText').textContent = c + '%';
+          }
+        }
+
+        // re-enable present button after jury arrives
+        document.getElementById('presentBtn').disabled = false;
+      }
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/[&<>\"']/g, function(s) { return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]); });
+    }
+  </script>
+</body>
+</html>

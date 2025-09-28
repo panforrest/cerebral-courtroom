@@ -1,0 +1,43 @@
+name: Real E2E (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_playwright:
+        description: 'Run Playwright real API e2e (set to true to run)'
+        required: true
+        default: 'true'
+
+jobs:
+  real-e2e:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.run_playwright == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-browsers-v1
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; fi
+          pip install pytest pytest-playwright
+      - name: Install Playwright browsers
+        run: |
+          source .venv/bin/activate
+          python -m playwright install --with-deps chromium
+      - name: Run real e2e tests
+        env:
+          DEMO_USE_REAL_API: '1'
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          source .venv/bin/activate
+          pytest tests/e2e/test_demo_playwright.py -q -k demo

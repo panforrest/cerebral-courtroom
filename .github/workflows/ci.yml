@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-browsers-v1
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; fi
+          pip install pytest pytest-playwright
+      - name: Install Playwright browsers
+        run: |
+          source .venv/bin/activate
+          python -m playwright install --with-deps chromium
+      - name: Run tests (mocked e2e)
+        env:
+          # Ensure e2e uses mock mode by default
+          DEMO_USE_REAL_API: '0'
+        run: |
+          source .venv/bin/activate
+          pytest -q
